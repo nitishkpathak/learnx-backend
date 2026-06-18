@@ -97,7 +97,10 @@ router.post("/login", async (req, res) => {
                 name: user.name,
                 email: user.email,
                 phone: user.phone,
-                education: user.education
+                education: user.education,
+                studentId: user.studentId,
+                dp: user.dp || null,
+                joined: new Date(user.createdAt || Date.now()).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
             }
         });
 
