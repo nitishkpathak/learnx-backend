@@ -49,14 +49,58 @@ router.put("/assignment/:id", auth, async (req, res) => {
         const assignment = user.assignments.id(req.params.id);
         if (!assignment) return res.status(404).json({ message: "Assignment not found" });
 
+        const wasCompleted = assignment.status === "Completed";
+
         assignment.status = "Completed";
         assignment.icon = "fa-check";
         if (url) assignment.submissionUrl = url;
         if (notes) assignment.notes = notes;
         assignment.submittedAt = new Date();
-        
+
+        let earnedXp = 0;
+        let unlockedBadges = [];
+
+        if (!wasCompleted) {
+            earnedXp = 150;
+            user.xp = (user.xp || 0) + earnedXp;
+
+            // Check and unlock "Project Submitter" badge
+            const hasBadge = user.badges.some(b => b.name === "Project Submitter");
+            if (!hasBadge) {
+                const newBadge = { 
+                    name: "Project Submitter", 
+                    icon: "fa-upload", 
+                    description: "Submitted your first assignment!", 
+                    unlockedAt: new Date() 
+                };
+                user.badges.push(newBadge);
+                unlockedBadges.push(newBadge);
+            }
+
+            // Also check for "Active Learner" badge if total XP hits 200+
+            if (user.xp >= 200) {
+                const hasActiveLearner = user.badges.some(b => b.name === "Active Learner");
+                if (!hasActiveLearner) {
+                    const newBadge = {
+                        name: "Active Learner",
+                        icon: "fa-fire",
+                        description: "Earned over 200 XP!",
+                        unlockedAt: new Date()
+                    };
+                    user.badges.push(newBadge);
+                    unlockedBadges.push(newBadge);
+                }
+            }
+        }
+
         await user.save();
-        res.json(user.assignments);
+        res.json({
+            assignments: user.assignments,
+            xp: user.xp,
+            badges: user.badges,
+            earnedXp,
+            unlockedBadges
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Server Error" });
@@ -139,9 +183,93 @@ router.put("/course/:id/progress", auth, async (req, res) => {
         const course = user.enrolledCourses.find(c => c.courseId === req.params.id);
         if (!course) return res.status(404).json({ message: "Course not found" });
 
-        course.progress = Math.min(100, Math.max(0, parseInt(progress)));
+        const oldProgress = course.progress || 0;
+        const newProgress = Math.min(100, Math.max(0, parseInt(progress)));
+        course.progress = newProgress;
+
+        // Gamification: Calculate lessons completed and award XP
+        const oldLessons = Math.floor(oldProgress / 25);
+        const newLessons = Math.floor(newProgress / 25);
+        const completedDiff = Math.max(0, newLessons - oldLessons);
+        const earnedXp = completedDiff * 50;
+
+        if (earnedXp > 0) {
+            user.xp = (user.xp || 0) + earnedXp;
+        }
+
+        let unlockedBadges = [];
+        const tryUnlockBadge = (name, icon, description) => {
+            const hasBadge = user.badges.some(b => b.name === name);
+            if (!hasBadge) {
+                const newBadge = { name, icon, description, unlockedAt: new Date() };
+                user.badges.push(newBadge);
+                unlockedBadges.push(newBadge);
+            }
+        };
+
+        // 1. "First Steps" badge: completed first lesson
+        if (newProgress > 0) {
+            tryUnlockBadge("First Steps", "fa-shoe-prints", "Completed your first lesson!");
+        }
+
+        // 2. "HTML Master" badge: HTML Masterclass course progress reaches 100%
+        if (course.courseId === 'c1' && newProgress === 100) {
+            tryUnlockBadge("HTML Master", "fa-code", "Completed HTML & CSS Masterclass!");
+        }
+
+        // 3. "JS Wizard" badge: JS Basics course progress reaches 100%
+        if (course.courseId === 'c2' && newProgress === 100) {
+            tryUnlockBadge("JS Wizard", "fa-wand-magic-sparkles", "Completed JavaScript Basics!");
+        }
+
+        // 4. "Active Learner" badge: total user XP reaches 200+
+        if (user.xp >= 200) {
+            tryUnlockBadge("Active Learner", "fa-fire", "Earned over 200 XP!");
+        }
+
         await user.save();
-        res.json({ message: "Progress updated successfully", enrolledCourses: user.enrolledCourses });
+        res.json({ 
+            message: "Progress updated successfully", 
+            enrolledCourses: user.enrolledCourses, 
+            xp: user.xp,
+            badges: user.badges,
+            earnedXp,
+            unlockedBadges
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Server Error" });
+    }
+});
+
+// GET /api/dashboard/leaderboard
+// Fetch top students ranked by XP, and the current user's rank
+router.get("/leaderboard", auth, async (req, res) => {
+    try {
+        const allUsers = await User.find({})
+            .select("name email dp xp badges")
+            .sort({ xp: -1 });
+
+        const leaderboard = allUsers.map((u, index) => ({
+            rank: index + 1,
+            id: u._id,
+            name: u.name,
+            email: u.email,
+            dp: u.dp || null,
+            xp: u.xp || 0,
+            badgesCount: u.badges ? u.badges.length : 0
+        }));
+
+        const currentUserIndex = leaderboard.findIndex(u => u.id.toString() === req.user.id);
+        const currentUserRank = currentUserIndex !== -1 ? currentUserIndex + 1 : leaderboard.length + 1;
+        const top10 = leaderboard.slice(0, 10);
+
+        res.json({
+            leaderboard: top10,
+            userRank: currentUserRank,
+            userXp: allUsers[currentUserIndex] ? (allUsers[currentUserIndex].xp || 0) : 0,
+            userBadgesCount: allUsers[currentUserIndex] && allUsers[currentUserIndex].badges ? allUsers[currentUserIndex].badges.length : 0
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Server Error" });
@@ -149,7 +277,7 @@ router.put("/course/:id/progress", auth, async (req, res) => {
 });
 
 // POST /api/dashboard/reset
-// Reset user's dashboard data (courses and assignments) to defaults
+// Reset user's dashboard data (courses, assignments, settings, and gamification state) to defaults
 router.post("/reset", auth, async (req, res) => {
     try {
         const user = await User.findById(req.user.id);
@@ -168,9 +296,18 @@ router.post("/reset", auth, async (req, res) => {
         user.enrolledCourses = defaultCourses;
         user.assignments = defaultAssignments;
         user.settings = { emailNotif: true, pushNotif: false, theme: 'light' };
+        user.xp = 0;
+        user.badges = [];
 
         await user.save();
-        res.json({ message: "Dashboard data reset successfully", enrolledCourses: user.enrolledCourses, assignments: user.assignments, settings: user.settings });
+        res.json({ 
+            message: "Dashboard data reset successfully", 
+            enrolledCourses: user.enrolledCourses, 
+            assignments: user.assignments, 
+            settings: user.settings,
+            xp: user.xp,
+            badges: user.badges
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Server Error" });

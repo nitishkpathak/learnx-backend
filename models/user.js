@@ -10,6 +10,13 @@ const userSchema = new mongoose.Schema({
     // Dashboard Data
     studentId: String,
     dp: String,
+    xp: { type: Number, default: 0 },
+    badges: [{
+        name: { type: String, required: true },
+        icon: { type: String, required: true },
+        description: { type: String, required: true },
+        unlockedAt: { type: Date, default: Date.now }
+    }],
     enrolledCourses: [{
         courseId: String,
         name: String,
